@@ -1,0 +1,83 @@
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Testlauf: nur anzeigen, was sich ändern würde (nichts hochladen/löschen)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Nie zwei Deployments gleichzeitig; ein laufendes wird nicht abgebrochen.
+concurrency:
+  group: deploy-hetzner
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HOST: ${{ secrets.HETZNER_HOST }}
+      FTP_USER: ${{ secrets.HETZNER_USER }}
+      LFTP_PASSWORD: ${{ secrets.HETZNER_PASSWORD }}
+      # Zielordner relativ zum FTP-Login-Verzeichnis. Änderbar über die
+      # Repository-Variable DEPLOY_PATH (Settings → Variables → Actions).
+      TARGET: ${{ vars.DEPLOY_PATH || '.' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+      # Nur verschlüsseltes FTP (FTPS, explizites TLS) mit Zertifikatsprüfung.
+      LFTP_SETTINGS: >-
+        set ftp:ssl-force true;
+        set ftp:ssl-protect-data true;
+        set ftp:ssl-protect-list true;
+        set ssl:verify-certificate true;
+        set ftp:passive-mode true;
+        set net:max-retries 3;
+        set net:timeout 30;
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Website prüfen (validate.mjs)
+        run: node validate.mjs
+
+      - name: lftp installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+
+      - name: Sicherheitsprüfung Zielordner
+        run: |
+          # Erlaubt ist nur: Ordner trägt unsere Markierung (frühere Deployments)
+          # oder ist leer (abgesehen von Server-Standarddateien).
+          ENTRIES=$(lftp --env-password -u "$FTP_USER" -p 21 \
+            -e "$LFTP_SETTINGS mkdir -p -f \"$TARGET\"; cd \"$TARGET\"; cls -1a; bye" "ftp://$HOST" \
+            | sed 's:/$::' | grep -vxE '\.|\.\.' || true)
+          echo "Einträge im Zielordner: $(echo "$ENTRIES" | grep -c . || true)"
+          if echo "$ENTRIES" | grep -qx '\.bt-deploy'; then
+            echo "Zielordner-Status: bisheriges Deployment-Ziel"
+          elif [ -z "$(echo "$ENTRIES" | grep -vxE '\.well-known|\.htaccess|\.user\.ini|\.ftpquota' || true)" ]; then
+            echo "Zielordner-Status: leer"
+          else
+            echo "$ENTRIES"
+            echo "::error::Zielordner enthält fremde Dateien und ist kein bisheriges Deployment-Ziel. Abbruch, damit nichts gelöscht wird. DEPLOY_PATH prüfen."
+            exit 1
+          fi
+
+      - name: Dateien per FTPS übertragen (Spiegeln)
+        run: |
+          touch dist/.bt-deploy   # Markierung für die Sicherheitsprüfung
+          OPTS="--reverse --delete --verbose --no-perms --parallel=4"
+          [ "$DRY_RUN" = "true" ] && OPTS="$OPTS --dry-run" && echo "TESTLAUF – es wird nichts verändert"
+          lftp --env-password -u "$FTP_USER" -p 21 -e "$LFTP_SETTINGS
+            mirror $OPTS \
+              -x '^\.well-known/' -x '^\.htaccess$' -x '^\.user\.ini$' -x '^\.ftpquota$' \
+              dist/ \"$TARGET\";
+            bye" "ftp://$HOST"
