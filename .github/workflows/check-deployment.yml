@@ -1,0 +1,12 @@
+name: Check deployment configuration
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show configured secret names only
+        env:
+          CONFIGURED_SECRETS: ${{ toJSON(secrets) }}
+        run: python -c 'import os,json; print("Configured names:"); print("\n".join(sorted(k for k in json.loads(os.environ["CONFIGURED_SECRETS"]) if k != "github_token")))'
