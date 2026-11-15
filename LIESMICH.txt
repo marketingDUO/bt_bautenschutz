@@ -1,0 +1,6 @@
+BT Bautenschutz – vollständiger Website-Export
+Stand: 15.11.2026
+
+Der Ordner dist enthält die fertige Website einschließlich Unterseiten, Bildern, CSS und JavaScript. Für den Webserver den Inhalt von dist in das Webverzeichnis hochladen.
+
+Die übrigen Dateien enthalten den Quellstand und die Build-/Prüfskripte. Zugangsdaten und Git-Verlauf sind nicht enthalten.
