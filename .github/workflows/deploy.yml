@@ -85,7 +85,10 @@ jobs:
       - name: Dateien per FTPS übertragen (Spiegeln)
         run: |
           touch dist/.bt-deploy   # Markierung für die Sicherheitsprüfung
-          OPTS="--reverse --delete --verbose --no-perms --parallel=4"
+          # --overwrite: geänderte Dateien direkt ersetzen statt erst löschen
+          # (sonst wären Seiten während des Uploads kurz nicht erreichbar).
+          # --delete entfernt nur Dateien, die es in dist/ nicht mehr gibt.
+          OPTS="--reverse --delete --overwrite --verbose --no-perms --parallel=4"
           if [ "$DRY_RUN" = "true" ]; then
             OPTS="$OPTS --dry-run"
             echo "TESTLAUF – es wird nichts verändert"
