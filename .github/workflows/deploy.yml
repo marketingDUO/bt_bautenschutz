@@ -30,15 +30,6 @@ jobs:
       # Repository-Variable DEPLOY_PATH (Settings → Variables → Actions).
       TARGET: ${{ vars.DEPLOY_PATH || '.' }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-      # Nur verschlüsseltes FTP (FTPS, explizites TLS) mit Zertifikatsprüfung.
-      LFTP_SETTINGS: >-
-        set ftp:ssl-force true;
-        set ftp:ssl-protect-data true;
-        set ftp:ssl-protect-list true;
-        set ssl:verify-certificate true;
-        set ftp:passive-mode true;
-        set net:max-retries 3;
-        set net:timeout 30;
 
     steps:
       - uses: actions/checkout@v4
@@ -53,14 +44,34 @@ jobs:
       - name: lftp installieren
         run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
 
+      - name: FTPS-Verbindung vorbereiten
+        run: |
+          # Nur verschlüsseltes FTP (FTPS, explizites TLS) mit Zertifikatsprüfung.
+          # cmd:fail-exit: jeder fehlgeschlagene Befehl bricht lftp mit Fehlercode ab.
+          # Passwort kommt aus LFTP_PASSWORD (--env-password), nicht aus der Datei.
+          cat > "$RUNNER_TEMP/connect.lftp" <<EOF
+          set cmd:fail-exit yes
+          set ftp:ssl-force true
+          set ftp:ssl-protect-data true
+          set ftp:ssl-protect-list true
+          set ssl:verify-certificate true
+          set ftp:passive-mode true
+          set net:max-retries 3
+          set net:timeout 30
+          open --env-password -u "$FTP_USER" -p 21 "ftp://$HOST"
+          EOF
+
       - name: Sicherheitsprüfung Zielordner
         run: |
           # Erlaubt ist nur: Ordner trägt unsere Markierung (frühere Deployments)
           # oder ist leer (abgesehen von Server-Standarddateien).
-          ENTRIES=$(lftp --env-password -u "$FTP_USER" -p 21 \
-            -e "$LFTP_SETTINGS mkdir -p -f \"$TARGET\"; cd \"$TARGET\"; cls -1a; bye" "ftp://$HOST" \
-            | sed 's:/$::' | grep -vxE '\.|\.\.' || true)
-          echo "Einträge im Zielordner: $(echo "$ENTRIES" | grep -c . || true)"
+          # Verbindungs- oder Lesefehler lassen diesen Schritt fehlschlagen.
+          { cat "$RUNNER_TEMP/connect.lftp"
+            printf 'mkdir -p -f "%s"\ncd "%s"\ncls -1a\nbye\n' "$TARGET" "$TARGET"
+          } > "$RUNNER_TEMP/check.lftp"
+          RAW=$(lftp -f "$RUNNER_TEMP/check.lftp")
+          ENTRIES=$(printf '%s\n' "$RAW" | sed 's:/$::' | grep -vxE '\.|\.\.|' || true)
+          echo "Einträge im Zielordner: $(printf '%s' "$ENTRIES" | grep -c . || true)"
           if echo "$ENTRIES" | grep -qx '\.bt-deploy'; then
             echo "Zielordner-Status: bisheriges Deployment-Ziel"
           elif [ -z "$(echo "$ENTRIES" | grep -vxE '\.well-known|\.htaccess|\.user\.ini|\.ftpquota' || true)" ]; then
@@ -75,9 +86,12 @@ jobs:
         run: |
           touch dist/.bt-deploy   # Markierung für die Sicherheitsprüfung
           OPTS="--reverse --delete --verbose --no-perms --parallel=4"
-          [ "$DRY_RUN" = "true" ] && OPTS="$OPTS --dry-run" && echo "TESTLAUF – es wird nichts verändert"
-          lftp --env-password -u "$FTP_USER" -p 21 -e "$LFTP_SETTINGS
-            mirror $OPTS \
-              -x '^\.well-known/' -x '^\.htaccess$' -x '^\.user\.ini$' -x '^\.ftpquota$' \
-              dist/ \"$TARGET\";
-            bye" "ftp://$HOST"
+          if [ "$DRY_RUN" = "true" ]; then
+            OPTS="$OPTS --dry-run"
+            echo "TESTLAUF – es wird nichts verändert"
+          fi
+          { cat "$RUNNER_TEMP/connect.lftp"
+            printf '%s\n' "mirror $OPTS -x '^\.well-known/' -x '^\.htaccess\$' -x '^\.user\.ini\$' -x '^\.ftpquota\$' dist/ \"$TARGET\""
+            echo bye
+          } > "$RUNNER_TEMP/deploy.lftp"
+          lftp -f "$RUNNER_TEMP/deploy.lftp"
