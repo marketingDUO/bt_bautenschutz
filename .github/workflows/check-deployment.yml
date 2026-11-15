@@ -6,16 +6,30 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Check required FTP settings without exposing values
+      - name: Inspect Hetzner directories without changing files
         env:
-          FTP_SERVER_SET: ${{ secrets.FTP_SERVER != '' }}
-          FTP_HOST_SET: ${{ secrets.FTP_HOST != '' }}
-          FTP_USERNAME_SET: ${{ secrets.FTP_USERNAME != '' }}
-          FTP_USER_SET: ${{ secrets.FTP_USER != '' }}
-          FTP_PASSWORD_SET: ${{ secrets.FTP_PASSWORD != '' }}
-          FTP_SERVER_DIR_SET: ${{ secrets.FTP_SERVER_DIR != '' }}
-          FTP_TARGET_DIR_SET: ${{ secrets.FTP_TARGET_DIR != '' }}
-          HETZNER_HOST_SET: ${{ secrets.HETZNER_HOST != '' }}
-          HETZNER_USER_SET: ${{ secrets.HETZNER_USER != '' }}
-          HETZNER_PASSWORD_SET: ${{ secrets.HETZNER_PASSWORD != '' }}
-        run: python -c 'import os; print("\n".join(k + "=" + v for k,v in sorted(os.environ.items()) if k.endswith("_SET")))'
+          HOST: ${{ secrets.HETZNER_HOST }}
+          USERNAME: ${{ secrets.HETZNER_USER }}
+          PASSWORD: ${{ secrets.HETZNER_PASSWORD }}
+          TARGET: ${{ secrets.HETZNER_TARGET_DIR || secrets.HETZNER_PATH || secrets.HETZNER_REMOTE_PATH }}
+        run: |
+          python - <<'PY'
+          import os,ftplib,ssl
+          ftp=ftplib.FTP_TLS(context=ssl.create_default_context(),timeout=30)
+          ftp.connect(os.environ['HOST'],21)
+          ftp.login(os.environ['USERNAME'],os.environ['PASSWORD'])
+          ftp.prot_p()
+          print("Encrypted FTP connection successful")
+          print("Target configured:",bool(os.environ['TARGET']))
+          print("Root entries:",ftp.nlst())
+          if os.environ['TARGET']:
+              ftp.cwd(os.environ['TARGET'])
+              print("Configured target entries:",ftp.nlst())
+          else:
+              try:
+                  ftp.cwd('public_html')
+                  print("public_html entries:",ftp.nlst())
+              except ftplib.error_perm:
+                  pass
+          ftp.quit()
+          PY
